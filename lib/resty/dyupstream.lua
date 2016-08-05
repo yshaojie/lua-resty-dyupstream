@@ -8,7 +8,6 @@ local ngx_ERR = ngx.ERR
 local ngx_sleep = ngx.sleep
 local ngx_worker_exiting = ngx.worker.exiting
 
-_M.ready = false
 --servers data
 _M.data = {}
 --etcd cluster node list
@@ -98,12 +97,18 @@ local function release_lock()
     return true
 end
 
+
+local function get_dump_file_path()
+    local dump_path = _M.conf.dump_file.. "/" .. _M.conf.etcd_path:gsub("/", "_") .. ".json"
+    return dump_path;
+end
+
 local function dump_tofile()
     local saved = false
     while not saved do
         local lock = get_lock()
         if lock then
-            local f_path = _M.conf.dump_file .. _M.conf.etcd_path:gsub("/", "_")
+            local f_path = get_dump_file_path()
             local file, err = io.open(f_path, 'w')
             if file == nil then
                 log("Can't open file: " .. f_path .. err)
@@ -178,17 +183,38 @@ local function update_server(name)
     log("update server_name=[" .. name .. "] server node list success.")
 end
 
+
+--load server config from local file
+local function load_from_local()
+    local f_path = get_dump_file_path()
+    local file, err = io.open(f_path, "r")
+    if not file then
+        log("file ["..f_path.."] not exist,load config fail.")
+        return
+    end
+    local d = file:read("*a")
+    if not d then
+        log("read data from file ["..f_path.."] fail.")
+        file:close()
+        return
+    end
+    log("local data:"..d)
+    local data = cjson_safe.decode(d)
+    _M.data = data
+    file:close()
+end
+
 local function init_servers()
     local s_url = "/v2/keys" .. _M.conf.etcd_path .. "?recursive=true"
-    log("s_url=" .. s_url)
     local data_json = query_etcd_data(s_url)
-    if data_json.node.nodes then
+    if data_json then
         --for each server list
         for n, node in pairs(data_json.node.nodes) do
             local name = basename(node.key)
             update_server(name)
         end
-        _M.ready = true
+    else
+        load_from_local()
     end
 end
 
@@ -266,28 +292,24 @@ end
 
 function _M.init(conf)
     -- Load the upstreams from file
-    if not _M.ready then
-        log("start init dyupstream env")
-        --format etcd patch
-        conf.etcd_path = string.gsub(conf.etcd_path.."/","//", "/")
-        _M.conf = conf
-        --init etcd cluster list
-        _M.etcd_node_list = {}
-        log(_M.conf.etcd_urls)
-        for _, url in pairs(string.split(_M.conf.etcd_urls, ",")) do
-            local host, port = url:match("(.*):([0-9]+)")
-            local node = {}
-            node.host = host
-            node.port = port
-            table.insert(_M.etcd_node_list, node)
-        end
-        --init server configs
-        ngx.timer.at(0, init_servers)
-        _M.ready = true
-        log("end init dyupstream env success")
-    else
-        log("init finished ,do nothing")
+    log("start init dyupstream env")
+    --format etcd patch
+    conf.etcd_path = string.gsub(conf.etcd_path.."/","//", "/")
+    _M.conf = conf
+    --init etcd cluster list
+    _M.etcd_node_list = {}
+    log(_M.conf.etcd_urls)
+    for _, url in pairs(string.split(_M.conf.etcd_urls, ",")) do
+        local host, port = url:match("(.*):([0-9]+)")
+        local node = {}
+        node.host = host
+        node.port = port
+        table.insert(_M.etcd_node_list, node)
     end
+    --init server configs
+    ngx.timer.at(0, init_servers)
+    log("end init dyupstream env success")
+
     -- Start the etcd watcher
     ngx_timer_at(0, watch)
 end
