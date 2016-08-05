@@ -195,10 +195,12 @@ end
 
 local function watch(premature)
     if premature then
+        log("time work premature")
         return
     end
 
     if ngx_worker_exiting() then
+        log("work exit")
         return
     end
 
@@ -206,19 +208,22 @@ local function watch(premature)
     http_connect:set_timeout(60000)
 
     --get a effective connection
-    for index, node in pairs(_M.etcd_node_list) do
+    for _, node in pairs(_M.etcd_node_list) do
         local ok, err = http_connect:connect(node.host, node.port)
         if ok then
             break
         end
     end
+    --todo no connection available?
 
-    local s_url = "/v2/keys" .. _M.conf.etcd_path .. "?wait=true&recursive=true"
-    local res, err = http_connect:request({ path = s_url, method = "GET" })
+    local url = "/v2/keys" .. _M.conf.etcd_path .. "?wait=true&recursive=true"
+    local res, err = http_connect:request({ path = url, method = "GET" })
     if not err then
         local body, err = res:read_body()
+        http_connect:close()
         --restart watch
-        ngx_timer_at(0, watch)
+        ngx_timer_at(0,watch)
+        --        ngx_timer_at(0, watch)
         if not err then
             log("INFO: recieve change: " .. body)
             local change = cjson_safe.decode(body)
@@ -226,7 +231,7 @@ local function watch(premature)
                 local action = change.action
                 local key = change.node.key
                 if change.node.dir then
-                    --key style /xxx/xxx
+                    --key style /servers/server-name
                     local _, count = string.gsub(key, "/", "/")
                     if count ~= 2 then
                         log("illegal etcd path,etcd_path="..key)
@@ -251,18 +256,18 @@ local function watch(premature)
                     update_server(server_name)
                 end
             end
+            dump_tofile(false)
         end
-        dump_tofile(false)
     else
         ngx_timer_at(0, watch)
     end
-    http_connect:close()
     return
 end
 
 function _M.init(conf)
     -- Load the upstreams from file
     if not _M.ready then
+        log("start init dyupstream env")
         --format etcd patch
         conf.etcd_path = string.gsub(conf.etcd_path.."/","//", "/")
         _M.conf = conf
@@ -279,8 +284,10 @@ function _M.init(conf)
         --init server configs
         ngx.timer.at(0, init_servers)
         _M.ready = true
+        log("end init dyupstream env success")
+    else
+        log("init finished ,do nothing")
     end
-
     -- Start the etcd watcher
     ngx_timer_at(0, watch)
 end
@@ -339,7 +346,7 @@ function _M.round_robin_with_weight(name)
         end
 
         :: continue ::
-    end
+        end
 
         pick.current_weight = pick.current_weight - total
 
