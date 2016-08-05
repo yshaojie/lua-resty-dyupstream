@@ -22,32 +22,6 @@ string.split = function(s, p)
     return rt
 end
 
-local function copyTab(st)
-    local tab = {}
-    for k, v in pairs(st or {}) do
-        if type(v) ~= "table" then
-            tab[k] = v
-        else
-            tab[k] = copyTab(v)
-        end
-    end
-    return tab
-end
-
-local function indexof(t, e)
-    for k, v in pairs(t) do
-        if v.host == e.host and v.port == e.port then
-            return k
-        end
-    end
-    return nil
-end
-
-local function basename(s)
-    local x, y = s:match("(.*)/([^/]*)/?")
-    return y, x
-end
-
 local function split_addr(s)
     host, port = s:match("(.*):([0-9]+)")
 
@@ -210,8 +184,9 @@ local function init_servers()
     if data_json then
         --for each server list
         for n, node in pairs(data_json.node.nodes) do
-            local name = basename(node.key)
-            update_server(name)
+            local _,end_index=string.find(node.key,_M.conf.etcd_path,1,true)
+            local server_name = string.sub(node.key,end_index+1,-1)
+            update_server(server_name)
         end
     else
         load_from_local()
