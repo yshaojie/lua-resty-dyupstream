@@ -1,7 +1,7 @@
 local _M = {}
 local http = require "resty.http"
 local cjson_safe = require "cjson.safe"
-
+local lock = require "resty.lock"
 local ngx_timer_at = ngx.timer.at
 local ngx_log = ngx.log
 local ngx_ERR = ngx.ERR
@@ -72,21 +72,33 @@ local function release_lock()
 end
 
 
-local function get_dump_file_path()
-    local dump_path = _M.conf.dump_file.. "/" .. _M.conf.etcd_path:gsub("/", "_") .. ".json"
-    return dump_path;
+local function open_dump_file(mode)
+    local dump_path = _M.conf.dump_path.. "/" .. _M.conf.etcd_path:gsub("/", "_") .. ".json"
+    log("open file:"..dump_path)
+    local dump_file, err = io.open(dump_path, mode)
+    if not io.type(dump_file) then --file not exist
+        os.execute("mkdir -p  ".._M.conf.dump_path)
+        --touch file
+        os.execute("touch ".. dump_path)
+        dump_file, err = io.open(dump_path, mode)
+    end
+    return dump_file,err;
 end
 
 local function dump_tofile()
     local saved = false
+    log("start dump file")
     while not saved do
-        local lock = get_lock()
-        if lock then
-            local f_path = get_dump_file_path()
-            local file, err = io.open(f_path, 'w')
+        local locks ,err = lock:new(_M.conf.dict)
+        if err then
+            log("get locks error:"..err)
+        end
+        local elapsed,err = locks:lock("dump_file_lock")
+        if not err then
+            local file, err = open_dump_file('w')
             if file == nil then
-                log("Can't open file: " .. f_path .. err)
-                release_lock()
+                locks:unlock()
+                log(err)
                 return false
             end
 
@@ -95,9 +107,10 @@ local function dump_tofile()
             file:flush()
             file:close()
             saved = true
-            release_lock()
+            log("dump file success. data:"..data)
+            locks:unlock()
         else
-            ngx_sleep(0.2)
+            log("wait for lock fail. err:"..err)
         end
     end
 end
@@ -107,7 +120,6 @@ local function query_etcd_data(url)
     local http_conn = http.new()
     http_conn:set_timeout(1000)
     for index, node in pairs(_M.etcd_node_list) do
-        log("index="..index)
         http_conn:connect(node.host, node.port)
         local res, err = http_conn:request({ path = url, method = "GET" })
         if not err then
@@ -153,26 +165,25 @@ local function update_server(name)
     _M.data[name].servers = servers
     _M.data[name].count = table.getn(servers)
     ngx.log(ngx.ERR, "update [" .. name .. "] servers, data=" .. cjson_safe.encode(_M.data[name]))
-    dump_tofile(true)
+    dump_tofile()
     log("update server_name=[" .. name .. "] server node list success.")
 end
 
 
 --load server config from local file
 local function load_from_local()
-    local f_path = get_dump_file_path()
-    local file, err = io.open(f_path, "r")
+    local file, err = open_dump_file("r")
     if not file then
-        log("file ["..f_path.."] not exist,load config fail.")
+        log("dump file not exist,load config fail.")
         return
     end
-    local d = file:read("*a")
-    if not d then
-        log("read data from file ["..f_path.."] fail.")
+    local d ,err= file:read("*a")
+    if err then
+        log("read data from dump file fail. error:"..err)
         file:close()
         return
     end
-    log("local data:"..d)
+    log("load config data from local, data:"..d)
     local data = cjson_safe.decode(d)
     _M.data = data
     file:close()
@@ -257,7 +268,7 @@ local function watch(premature)
                     update_server(server_name)
                 end
             end
-            dump_tofile(false)
+            dump_tofile()
         end
     else
         ngx_timer_at(0, watch)
@@ -292,23 +303,32 @@ end
 -- Round robin
 function _M.round_robin_server(name)
 
-    if not _M.ready or not _M.data[name] then
+    if not _M.data[name] then
         return nil, "upstream not ready."
     end
 
-    local c = _M.conf.dict
-    local c_key = name .. "_count"
-    local count, err = c:incr(c_key, 1)
-    if err == "not found" then
+    local c = ngx.shared[_M.conf.dict]
+    local robin_key = name .. "_count"
+    local count, err = c:incr(robin_key, 1)
+    if not count then --incr fail
         count = 1
-        ok = c:set(c_key, 1)
+        local ok = c:set(robin_key, 1)
         if not ok then
-            _M.data[name].count = _M.data[name].count + 1
-            count = _M.data[name].count
+            return random_server(name)
         end
     end
-    local pick = count % #_M.data[name].servers
-    return _M.data[name].servers[pick + 1]
+    local index = count % #_M.data[name].servers+1
+    return _M.data[name].servers[index]
+end
+
+function _M.random_server(name)
+    local server_count = _M.data[name].count
+    if not _M.data[name] or not server_count or server_count<1 then
+        return nil, "upstream not ready."
+    end
+    local server_count = _M.data[name].count
+    local index = math.random(1,server_count)
+    return _M.data[name].servers[index]
 end
 
 function _M.round_robin_with_weight(name)
