@@ -106,7 +106,7 @@ end
 local function update_server(name)
     log("start update server_name=[" .. name .. "] server node list.")
     --server register url
-    local server_register_url = "/v2/keys" .. _M.conf.etcd_path .. name .. "?recursive=true"
+    local server_register_url = "/v2/keys" .. _M.conf.etcd_path .. name
     local json_body = query_etcd_data(server_register_url)
     local nodes = {}
     --not exist server or no server node
