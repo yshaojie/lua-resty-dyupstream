@@ -29,7 +29,6 @@ local function get_lock(lock_name)
         return
     end
     local elapsed, err = lock:lock(lock_name)
-    ngx.say("lock: ", elapsed, ", ", err)
     return lock;
 end
 
