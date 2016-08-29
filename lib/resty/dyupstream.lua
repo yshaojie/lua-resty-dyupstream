@@ -50,7 +50,7 @@ local function dump_tofile()
     log("start dump file")
     while not saved do
         local lock = get_lock("dump_file_lock")
-        if not lock then
+        if lock then
             local file, err = open_dump_file('w')
             if file == nil then
                 locks:unlock()
