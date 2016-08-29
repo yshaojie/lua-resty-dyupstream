@@ -25,7 +25,7 @@ end
 local function get_lock(lock_name)
     local lock, err = lock:new(_M.conf.dict)
     if err then
-        log("get locks error:" .. err)
+        log("get lock error:" .. err)
         return
     end
     local elapsed, err = lock:lock(lock_name)
@@ -53,7 +53,7 @@ local function dump_tofile()
         if lock then
             local file, err = open_dump_file('w')
             if file == nil then
-                locks:unlock()
+                lock:unlock()
                 log(err)
                 return false
             end
