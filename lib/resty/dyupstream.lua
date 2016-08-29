@@ -10,6 +10,8 @@ local ngx_worker_exiting = ngx.worker.exiting
 local etcd_node_list = {}
 --all server list exam:{"server-name":{"count":0,"nodes":{}}}
 local servers = {}
+--request fail server list,exam:{"server-name":{"nodes":{}}}
+local fail_servers ={}
 local function log(message)
     ngx_log(ngx_ERR, message)
 end
@@ -20,26 +22,15 @@ string.split = function(s, p)
     return rt
 end
 
-local function get_lock()
-    local dict = _M.conf.dict
-    local key = "lock"
-    -- only the worker who get the lock can update the dump file.
-    local ok, err = dict:add(key, true)
-    if not ok then
-        if err == "exists" then
-            return nil
-        end
-        log("failed to add key \"", key, "\": ", err)
-        return nil
+local function get_lock(lock_name)
+    local lock, err = lock:new(_M.conf.dict)
+    if err then
+        log("get locks error:" .. err)
+        return
     end
-    return true
-end
-
-local function release_lock()
-    local dict = _M.conf.dict
-    local key = "lock"
-    local ok, err = dict:delete(key)
-    return true
+    local elapsed, err = lock:lock(lock_name)
+    ngx.say("lock: ", elapsed, ", ", err)
+    return lock;
 end
 
 
@@ -59,12 +50,8 @@ local function dump_tofile()
     local saved = false
     log("start dump file")
     while not saved do
-        local locks, err = lock:new(_M.conf.dict)
-        if err then
-            log("get locks error:" .. err)
-        end
-        local elapsed, err = locks:lock("dump_file_lock")
-        if not err then
+        local lock = get_lock("dump_file_lock")
+        if not lock then
             local file, err = open_dump_file('w')
             if file == nil then
                 locks:unlock()
@@ -78,9 +65,7 @@ local function dump_tofile()
             file:close()
             saved = true
             log("dump file success. data:" .. data)
-            locks:unlock()
-        else
-            log("wait for lock fail. err:" .. err)
+            lock:unlock()
         end
     end
 end
@@ -118,7 +103,7 @@ local function update_server(name)
             local data, err = cjson_safe.decode(server_node.value)
             if not err then
                 --insert the server info to server list
-                table.insert(nodes, { host = data.host, port = data.port, weight = data.weight, current_weight = 0 })
+                table.insert(nodes, { host = data.host, port = data.port, weight = data.weight})
             end
         end
     end
@@ -264,6 +249,49 @@ local function watch(premature)
     end
 end
 
+local function check_fail_nodes()
+    while true do
+        if ngx_worker_exiting() then
+            log("work exit,stop check_fail_nodes")
+            return
+        end
+        for server_name, data in pairs(fail_servers) do
+            for index, node in pairs(data.nodes) do
+                local current_time = os.time()
+                if current_time-node.first_time >= node.fail_timeout then
+                    --remove from fail_servers
+                    table.remove(data.nodes,index)
+                    local server_register_url = "/v2/keys" .. _M.conf.etcd_path .. server_name.."/"..node.host..":"..node.port
+                    local json_body = query_etcd_data(server_register_url)
+
+                    --server exist
+                    if json_body and not json_body.errorCode then
+                        if not servers[server_name] then
+                            servers[server_name]={}
+                            servers[server_name].nodes={}
+                        end
+                        local exist = false
+                        for index, available_node in pairs(servers[server_name].nodes) do
+                            --has been existed
+                            if available_node.host == node.host and available_node.port == node.port then
+                                exist = true
+                                break
+                            end
+                        end
+
+                        --add to zhe server_name
+                        if not exist then
+                            table.insert(servers[server_name].nodes,node.bak_data)
+                        end
+
+                    end
+                end
+            end
+        end
+        ngx.sleep(1)
+    end
+end
+
 
 function _M.init(conf)
     -- Load the upstreams from file
@@ -285,6 +313,9 @@ function _M.init(conf)
     ngx_timer_at(0, init_servers)
     -- Start the etcd watcher
     ngx_timer_at(0, watch)
+    -- fail node check
+    ngx_timer_at(0, check_fail_nodes)
+
     log("end init dyupstream env success")
 end
 
@@ -315,7 +346,62 @@ function _M.random_server(name)
     end
     local server_count = servers[name].count
     local index = math.random(1, server_count)
-    return servers[name].nodes[index]
+    local peer = {}
+    peer.host = servers[name].nodes[index].host
+    peer.port = servers[name].nodes[index].port
+    return peer
+end
+
+function _M.add_fail_peer(server_name,peer)
+    local fail_node;
+    if fail_servers[server_name] and fail_servers[server_name].nodes then
+        for index, node in pairs(fail_servers[server_name].nodes) do
+            if node.host == peer.host and node.port == peer.port then
+                fail_node = node;
+                break;
+            end
+        end
+    end
+
+    local server_node;
+    for index, node in pairs(servers[server_name].nodes) do
+        if node.host == peer.host and node.port == peer.port then
+            server_node = node
+        end
+    end
+
+    if not server_node then
+        return
+    end
+
+    --init zhe fail node
+    if not fail_node then
+        fail_node = {}
+        fail_node.first_time = os.time()
+        fail_node.host = server_node.host
+        fail_node.port = server_node.port
+        fail_node.fail_count=0
+        fail_node.max_fails = server_node.max_fails or 3
+        fail_node.fail_timeout = server_node.fail_timeout or 10
+        fail_node.bak_data=server_node
+        if not fail_servers[server_name] then
+            fail_servers[server_name] = {}
+            fail_servers[server_name].nodes = {}
+        end
+        table.insert(fail_servers[server_name].nodes,fail_node)
+    end
+
+    fail_node.fail_count = fail_node.fail_count+1
+    --remove zhe fail node from servers
+    if fail_node.fail_count >= fail_node.max_fails then
+        for index, node in pairs(servers[server_name].nodes) do
+            if node.host == server_node.host and node.port == server_node.port then
+                table.remove(servers[server_name].nodes,index)
+            end
+        end
+    end
+
+    servers[server_name].count = table.getn(servers[server_name].nodes)
 end
 
 function _M.all_servers(name)
