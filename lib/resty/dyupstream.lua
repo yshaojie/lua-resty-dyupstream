@@ -57,7 +57,6 @@ local function dump_tofile()
                 log(err)
                 return false
             end
-
             local data = cjson_safe.encode(servers)
             file:write(data)
             file:flush()
@@ -151,23 +150,6 @@ local function load_from_local()
     file:close()
 end
 
-local function init_servers()
-    local s_url = "/v2/keys" .. _M.conf.etcd_path
-    local data_json,etcd_index = query_etcd_data(s_url)
-    if data_json then
-        --store the etcd index
-        _M.etcd_index = etcd_index
-        --for each server list
-        for n, node in pairs(data_json.node.nodes) do
-            local _, end_index = string.find(node.key, _M.conf.etcd_path, 1, true)
-            local server_name = string.sub(node.key, end_index + 1, -1)
-            update_server(server_name)
-        end
-    else
-        load_from_local()
-    end
-end
-
 local function proccess_action(message)
     log("INFO: recieve change: " .. message)
 
@@ -255,7 +237,7 @@ local function do_watch()
     end
 end
 
-local function watch(premature)
+local function watch (premature)
     log("watch start...")
     if premature then
         log("time work premature")
@@ -268,6 +250,25 @@ local function watch(premature)
         end
         do_watch()
     end
+end
+
+local function init_servers()
+    local s_url = "/v2/keys" .. _M.conf.etcd_path
+    local data_json,etcd_index = query_etcd_data(s_url)
+    if data_json then
+        --store the etcd index
+        _M.etcd_index = etcd_index
+        --for each server list
+        for n, node in pairs(data_json.node.nodes) do
+            local _, end_index = string.find(node.key, _M.conf.etcd_path, 1, true)
+            local server_name = string.sub(node.key, end_index + 1, -1)
+            update_server(server_name)
+        end
+    else
+        load_from_local()
+    end
+    -- Start the etcd watcher
+    watch()
 end
 
 local function check_fail_nodes()
@@ -332,8 +333,6 @@ function _M.init(conf)
     end
     --init server configs
     ngx_timer_at(0, init_servers)
-    -- Start the etcd watcher
-    ngx_timer_at(0, watch)
     -- fail node check
     ngx_timer_at(0, check_fail_nodes)
 
