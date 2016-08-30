@@ -84,6 +84,7 @@ local function query_etcd_data(uri)
             end
         end
     end
+    log("query etcd data fail. uri="..uri)
     return nil
 end
 
@@ -94,17 +95,28 @@ local function update_server(name)
     local json_body = query_etcd_data(server_register_url)
     local nodes = {}
     --not exist server or no server node
-    if json_body.errorCode or not json_body.node.nodes then
+    if not json_body or json_body.errorCode or not json_body.node.nodes then
         --do nothing
-    else
-        --for each server list
-        for index, server_node in pairs(json_body.node.nodes) do
-            local data, err = cjson_safe.decode(server_node.value)
-            if not err then
-                --insert the server info to server list
-                table.insert(nodes, { host = data.host, port = data.port, weight = data.weight})
+        return
+    end
+
+    --for each server list
+    for index, server_node in pairs(json_body.node.nodes) do
+        local data, err = cjson_safe.decode(server_node.value)
+        repeat
+            if not data then
+                break
             end
-        end
+            if not data.host or not data.port then
+                log("illegal server register data:"..server_node.value)
+                break
+            end
+
+            local weight = data.weight or 1
+            --insert the server info to server list
+            table.insert(nodes, { host = data.host, port = data.port, weight = weight})
+            break
+        until true
     end
 
     if not servers[name] then --not exist ,init it
