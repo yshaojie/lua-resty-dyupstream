@@ -77,10 +77,11 @@ local function query_etcd_data(uri)
         local http_address = "http://"..node.host..":"..node.port..uri
         local res, err = http_conn:request_uri(http_address,{method = "GET"})
         if res then
+            local etcd_index = res.headers['X-Etcd-Index'];
             local json_body = cjson_safe.decode(res.body)
             --errorCode=100 ->	“Key not found”
             if json_body then
-                return json_body
+                return json_body,etcd_index
             end
         end
     end
@@ -152,8 +153,10 @@ end
 
 local function init_servers()
     local s_url = "/v2/keys" .. _M.conf.etcd_path
-    local data_json = query_etcd_data(s_url)
+    local data_json,etcd_index = query_etcd_data(s_url)
     if data_json then
+        --store the etcd index
+        _M.etcd_index = etcd_index
         --for each server list
         for n, node in pairs(data_json.node.nodes) do
             local _, end_index = string.find(node.key, _M.conf.etcd_path, 1, true)
@@ -237,11 +240,18 @@ local function do_watch()
 
     local etcd_index = res.headers['X-Etcd-Index'];
     --store the max etcd index
-    if not _M.etcd_index or (etcd_index and _M.etcd_index < etcd_index) then
+    if not _M.etcd_index then
         _M.etcd_index = etcd_index
-    end
-    if body then
-        proccess_action(body)
+        if body then
+            proccess_action(body)
+        end
+    elseif not etcd_index or _M.etcd_index >= etcd_index then
+        init_servers()
+    else
+        _M.etcd_index = etcd_index
+        if body then
+            proccess_action(body)
+        end
     end
 end
 
