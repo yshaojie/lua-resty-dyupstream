@@ -12,6 +12,11 @@ local etcd_node_list = {}
 local servers = {}
 --request fail server list,exam:{"server-name":{"nodes":{}}}
 local fail_servers ={}
+
+--function declare start
+
+--function declare end
+
 local function log(message)
     ngx_log(ngx_ERR, message)
 end
@@ -222,18 +227,11 @@ local function do_watch()
 
     local etcd_index = res.headers['X-Etcd-Index'];
     --store the max etcd index
-    if not _M.etcd_index then
+    if not _M.etcd_index or (etcd_index and _M.etcd_index < etcd_index) then
         _M.etcd_index = etcd_index
-        if body then
-            proccess_action(body)
-        end
-    elseif not etcd_index or _M.etcd_index >= etcd_index then
-        init_servers()
-    else
-        _M.etcd_index = etcd_index
-        if body then
-            proccess_action(body)
-        end
+    end
+    if body then
+        proccess_action(body)
     end
 end
 
