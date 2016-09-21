@@ -215,6 +215,7 @@ local function do_watch()
     if _M.etcd_index then
         url = url .. "&waitIndex=" .. (_M.etcd_index + 1)
     end
+    log("start watch url="..url)
     local res, err = etcd_watch_http_connect:request({ path = url, method = "GET" })
     if err then
         return
@@ -229,6 +230,7 @@ local function do_watch()
     --store the max etcd index
     if not _M.etcd_index or (etcd_index and _M.etcd_index < etcd_index) then
         _M.etcd_index = etcd_index
+        log("set _M.etcd_index=".._M.etcd_index)
     end
     if body then
         proccess_action(body)
