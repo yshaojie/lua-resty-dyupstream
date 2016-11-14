@@ -241,6 +241,8 @@ local function do_watch()
 end
 
 local function watch (premature)
+    init_servers()
+
     log("watch start...")
     if premature then
         log("time work premature")
@@ -332,8 +334,6 @@ function _M.init(conf)
         node.port = port
         table.insert(etcd_node_list, node)
     end
-    --init server configs
-    init_servers()
 
     -- Start the etcd watcher
     ngx_timer_at(0, watch)
