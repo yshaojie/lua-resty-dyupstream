@@ -14,7 +14,7 @@ local servers = {}
 local fail_servers ={}
 
 --function declare start
-
+local init_servers;
 --function declare end
 
 local function log(message)
@@ -227,13 +227,16 @@ local function do_watch()
     end
 
     local etcd_index = res.headers['X-Etcd-Index'];
-    --store the max etcd index
-    if not _M.etcd_index or (etcd_index and _M.etcd_index < etcd_index) then
+
+    if not _M.etcd_index or _M.etcd_index >= etcd_index then
+        init_servers()
+    else
+        --store the max etcd index
         _M.etcd_index = etcd_index
         log("set _M.etcd_index=".._M.etcd_index)
-    end
-    if body then
-        proccess_action(body)
+        if body then
+            proccess_action(body)
+        end
     end
 end
 
@@ -252,7 +255,7 @@ local function watch (premature)
     end
 end
 
-local function init_servers()
+ init_servers =function()
     local s_url = "/v2/keys" .. _M.conf.etcd_path
     local data_json,etcd_index = query_etcd_data(s_url)
     if data_json then
@@ -267,8 +270,6 @@ local function init_servers()
     else
         load_from_local()
     end
-    -- Start the etcd watcher
-    watch()
 end
 
 local function check_fail_nodes()
@@ -332,7 +333,11 @@ function _M.init(conf)
         table.insert(etcd_node_list, node)
     end
     --init server configs
-    ngx_timer_at(0, init_servers)
+    init_servers()
+
+    -- Start the etcd watcher
+    ngx_timer_at(0, watch)
+
     -- fail node check
     ngx_timer_at(0, check_fail_nodes)
 
